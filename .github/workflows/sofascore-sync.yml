@@ -1,6 +1,11 @@
 name: Synchronisation SofaScore
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/sofascore-sync.yml'
   schedule:
     # Décalé des minutes de forte charge de GitHub Actions.
     - cron: '11,26,41,56 * * * *'
