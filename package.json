@@ -1,0 +1,13 @@
+{
+  "name": "psg-hub-sofascore-sync",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Robot autonome SofaScore de PSG Hub",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "playwright": "1.55.0"
+  }
+}
