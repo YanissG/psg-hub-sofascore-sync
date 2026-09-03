@@ -2,8 +2,9 @@ name: Synchronisation SofaScore
 
 on:
   schedule:
-    # Même cadence de 15 minutes, décalée des créneaux GitHub les plus chargés.
-    - cron: '7,22,37,52 * * * *'
+    # Cadence stable de 15 minutes. Pendant un match, le script repasse
+    # automatiquement toutes les 3 minutes au sein de la même exécution.
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 permissions:
