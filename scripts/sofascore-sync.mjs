@@ -6,9 +6,17 @@ const baseUrl = String(
 ).replace(/\/$/, '');
 const token = String(process.env.SYNC_SECRET_TOKEN || '');
 const PSG_ID = 1644;
-const API_BASES = [
-  'https://www.sofascore.com/api/v1',
-  'https://api.sofascore.com/api/v1',
+const API_SOURCES = [
+  {
+    base: 'https://api-sofascore-com.translate.goog/api/v1',
+    query: '_x_tr_sl=auto&_x_tr_tl=fr&_x_tr_hl=fr',
+  },
+  {
+    base: 'https://www-sofascore-com.translate.goog/api/v1',
+    query: '_x_tr_sl=auto&_x_tr_tl=fr&_x_tr_hl=fr',
+  },
+  { base: 'https://www.sofascore.com/api/v1', query: '' },
+  { base: 'https://api.sofascore.com/api/v1', query: '' },
 ];
 
 if (!baseUrl || !token) {
@@ -38,12 +46,18 @@ let directBlocked = false;
 
 async function directFetch(path) {
   let lastError;
-  for (const apiBase of API_BASES) {
+  for (const source of API_SOURCES) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         const separator = path.includes('?') ? '&' : '?';
+        const query = [
+          source.query,
+          `_psghub=${Date.now()}-${attempt}`,
+        ]
+          .filter(Boolean)
+          .join('&');
         const response = await fetch(
-          `${apiBase}/${path}${separator}_psghub=${Date.now()}`,
+          `${source.base}/${path}${separator}${query}`,
           {
             headers: browserHeaders(),
             signal: AbortSignal.timeout(20_000),
