@@ -207,8 +207,11 @@ async function addEventDetails(responses, event, includeIncidents) {
 async function buildSnapshot() {
   const responses = {};
   const [lastEvents, nextEvents] = await Promise.all([
-    collectPaged(responses, PSG_ID, 'last', 2),
-    collectPaged(responses, PSG_ID, 'next', 2),
+    // Le moteur PSG Hub consomme cinq pages d'historique pour calculer les
+    // cotes sur deux saisons, et trois pages futures pour réconcilier le
+    // calendrier. L'instantané doit donc contenir exactement ce périmètre.
+    collectPaged(responses, PSG_ID, 'last', 5),
+    collectPaged(responses, PSG_ID, 'next', 3),
   ]);
   responses[`team/${PSG_ID}/players`] = await sofaFetch(
     `team/${PSG_ID}/players`,
@@ -221,7 +224,7 @@ async function buildSnapshot() {
     if (otherId) {
       [opponentEvents, responses[`team/${otherId}/players`]] =
         await Promise.all([
-          collectPaged(responses, otherId, 'last', 2),
+          collectPaged(responses, otherId, 'last', 5),
           sofaFetch(`team/${otherId}/players`),
         ]);
     }
