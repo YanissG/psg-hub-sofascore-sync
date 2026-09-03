@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { chromium } from 'playwright';
 
 const baseUrl = String(
-  process.env.PSG_HUB_SYNC_URL || process.env.PSG_VAULT_SYNC_URL || '',
+  process.env.PSG_HUB_SYNC_URL || '',
 ).replace(/\/$/, '');
 const token = String(process.env.SYNC_SECRET_TOKEN || '');
 const PSG_ID = 1644;
