@@ -39,11 +39,11 @@ function runCollector() {
   });
 }
 
-async function hasRecentScheduledSuccess() {
+async function scheduledAutomationIsProven() {
   if (!repository) return false;
   try {
     const response = await fetch(
-      `https://api.github.com/repos/${repository}/actions/runs?event=schedule&status=success&per_page=10`,
+      `https://api.github.com/repos/${repository}/actions/runs?event=schedule&status=success&per_page=20`,
       {
         headers: {
           accept: 'application/vnd.github+json',
@@ -56,11 +56,20 @@ async function hasRecentScheduledSuccess() {
     );
     if (!response.ok) return false;
     const payload = await response.json();
-    const freshnessLimit = Date.now() - 30 * 60_000;
-    return (payload.workflow_runs || []).some(
-      (run) =>
-        run.conclusion === 'success' &&
-        new Date(run.updated_at || run.created_at || 0).getTime() >= freshnessLimit,
+    const freshnessLimit = Date.now() - 45 * 60_000;
+    const recentNames = new Set(
+      (payload.workflow_runs || [])
+        .filter(
+          (run) =>
+            run.conclusion === 'success' &&
+            new Date(run.updated_at || run.created_at || 0).getTime() >=
+              freshnessLimit,
+        )
+        .map((run) => run.name),
+    );
+    return (
+      recentNames.has('Synchronisation SofaScore') &&
+      recentNames.has('Secours SofaScore')
     );
   } catch {
     return false;
@@ -95,9 +104,9 @@ let successfulPasses = 0;
 for (let pass = 0; pass < passes; pass += 1) {
   const startedAt = Date.now();
   if (await runCollector()) successfulPasses += 1;
-  if (await hasRecentScheduledSuccess()) {
+  if (await scheduledAutomationIsProven()) {
     process.stdout.write(
-      'Un cron GitHub récent a réussi : le relais temporaire peut s’arrêter.\n',
+      'Les crons principal et de secours ont réussi : le relais peut s’arrêter.\n',
     );
     process.exit(successfulPasses ? 0 : 1);
   }
