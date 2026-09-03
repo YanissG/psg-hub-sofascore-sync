@@ -7,8 +7,9 @@ on:
     paths:
       - '.github/workflows/sofascore-sync.yml'
   schedule:
-    # Décalé des minutes de forte charge de GitHub Actions.
-    - cron: '11,26,41,56 * * * *'
+    # Fréquence de validation temporaire : GitHub accepte au minimum 5 min.
+    # Elle sera ramenée à 15 min après observation d'un vrai événement schedule.
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 permissions:
