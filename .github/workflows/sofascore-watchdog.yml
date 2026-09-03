@@ -1,0 +1,47 @@
+name: Secours SofaScore
+
+on:
+  schedule:
+    # Contrôle décalé de 7 minutes par rapport au passage principal. Il ne
+    # collecte SofaScore que si PSG Hub n'a pas été rafraîchi récemment.
+    - cron: '14,29,44,59 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    outputs:
+      stale: ${{ steps.check.outputs.stale }}
+    steps:
+      - name: Récupérer le robot
+        uses: actions/checkout@v4
+      - name: Contrôler la dernière synchronisation
+        id: check
+        shell: bash
+        env:
+          PSG_HUB_SYNC_URL: ${{ vars.PSG_HUB_SYNC_URL }}
+        run: echo "stale=$(node scripts/sofascore-freshness.mjs)" >> "$GITHUB_OUTPUT"
+
+  synchronize:
+    needs: freshness
+    if: needs.freshness.outputs.stale == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Récupérer le robot
+        uses: actions/checkout@v4
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Installer le collecteur sécurisé
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Rattraper la synchronisation manquante
+        run: node scripts/sofascore-sync.mjs
+        env:
+          PSG_HUB_SYNC_URL: ${{ vars.PSG_HUB_SYNC_URL }}
+          SYNC_SECRET_TOKEN: ${{ secrets.SYNC_SECRET_TOKEN }}
+          CHROME_PATH: /usr/bin/google-chrome

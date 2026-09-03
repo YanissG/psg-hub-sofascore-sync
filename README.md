@@ -5,6 +5,11 @@ Ce dépôt contient uniquement le robot de données de **PSG Hub**. Le site et l
 Le workflow :
 
 - se lance automatiquement toutes les 15 minutes ;
+- possède un contrôle de secours décalé qui rattrape un passage manqué ;
+- utilise un relais temporaire toutes les 15 minutes tant que GitHub n’a pas
+  encore exécuté son premier vrai cron sur ce nouveau dépôt ;
+- vérifie lors de son démarrage que ce relais sait se relancer lui-même, puis
+  continue sans intervention humaine ;
 - passe à une synchronisation toutes les 3 minutes pendant la fenêtre chaude d’un match ;
 - récupère les rencontres, compositions, incidents et joueurs depuis SofaScore ;
 - envoie le snapshot à l’API protégée de PSG Hub ;

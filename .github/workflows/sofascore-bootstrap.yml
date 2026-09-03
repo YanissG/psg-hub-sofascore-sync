@@ -1,30 +1,28 @@
-name: Synchronisation SofaScore
+name: Relais temporaire SofaScore
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/sofascore-sync.yml'
-  schedule:
-    # Passage principal toutes les 15 minutes, loin du début de l'heure où
-    # GitHub peut retarder ou supprimer des événements planifiés.
-    - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
+    inputs:
+      prove_relay:
+        description: Prouver immédiatement la relance automatique
+        required: false
+        type: boolean
+        default: false
 
 permissions:
+  actions: write
   contents: read
 
 concurrency:
-  group: psg-hub-sofascore-sync
+  group: psg-hub-sofascore-bootstrap
   cancel-in-progress: false
 
 jobs:
-  synchronize:
+  maintain-sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 355
     steps:
-      - name: Récupérer le projet
+      - name: Récupérer le robot
         uses: actions/checkout@v4
       - name: Installer Node.js
         uses: actions/setup-node@v4
@@ -32,9 +30,11 @@ jobs:
           node-version: 22
       - name: Installer le collecteur sécurisé
         run: npm install --ignore-scripts --no-audit --no-fund
-      - name: Mettre à jour PSG Hub
-        run: node scripts/sofascore-sync.mjs
+      - name: Maintenir la synchronisation jusqu'au réveil du cron
+        run: node scripts/sofascore-bootstrap.mjs
         env:
           PSG_HUB_SYNC_URL: ${{ vars.PSG_HUB_SYNC_URL }}
           SYNC_SECRET_TOKEN: ${{ secrets.SYNC_SECRET_TOKEN }}
           CHROME_PATH: /usr/bin/google-chrome
+          GITHUB_TOKEN: ${{ github.token }}
+          SOFASCORE_BOOTSTRAP_PASSES: ${{ inputs.prove_relay && '1' || '22' }}
