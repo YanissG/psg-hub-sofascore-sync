@@ -23,8 +23,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Installer le collecteur sécurisé
+        run: npm install --ignore-scripts --no-audit --no-fund
       - name: Mettre à jour PSG Hub
-        run: node scripts/sofascore-trigger.mjs
+        run: node scripts/sofascore-sync.mjs
         env:
           PSG_HUB_SYNC_URL: ${{ vars.PSG_HUB_SYNC_URL }}
           SYNC_SECRET_TOKEN: ${{ secrets.SYNC_SECRET_TOKEN }}
+          CHROME_PATH: /usr/bin/google-chrome
