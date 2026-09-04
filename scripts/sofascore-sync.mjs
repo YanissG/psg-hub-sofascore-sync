@@ -269,8 +269,12 @@ async function buildSnapshot() {
 
 async function postSnapshot(snapshot, deep = false) {
   snapshot.generatedAt = new Date().toISOString();
-  const response = await fetch(`${endpoint}${deep ? '?deep=1' : ''}`, {
+  const requestUrl = `${endpoint}${deep ? '?deep=1' : ''}`;
+  const response = await fetch(requestUrl, {
     method: 'POST',
+    // Une redirection vers un autre domaine retire l'en-tête Authorization.
+    // On l'interdit pour signaler immédiatement une ancienne URL de production.
+    redirect: 'manual',
     headers: {
       authorization: `Bearer ${token}`,
       accept: 'application/json',
@@ -280,6 +284,13 @@ async function postSnapshot(snapshot, deep = false) {
     body: JSON.stringify({ snapshot }),
     signal: AbortSignal.timeout(120_000),
   });
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get('location') || 'destination inconnue';
+    throw new Error(
+      `Adresse PSG Hub obsolète : ${requestUrl} redirige vers ${location}. ` +
+        'PSG_HUB_SYNC_URL doit pointer directement vers le domaine public.',
+    );
+  }
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(
