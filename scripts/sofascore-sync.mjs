@@ -303,8 +303,42 @@ async function postSnapshot(snapshot, deep = false) {
   return result;
 }
 
+async function matchMonitorState() {
+  try {
+    const response = await fetch(`${baseUrl}/api/state`, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) throw new Error(`PSG Hub ${response.status}`);
+    const state = await response.json();
+    const now = Date.now();
+    const monitorFrom = now - 5 * 60 * 60_000;
+    const monitorUntil = now + 15 * 60_000;
+    const nearbyMatches = (state.matches ?? []).filter((match) => {
+      const kickoff = new Date(match.date).getTime();
+      return kickoff >= monitorFrom && kickoff <= monitorUntil;
+    });
+    return {
+      available: true,
+      voteOpened: nearbyMatches.some(
+        (match) => match.status === 'FINISHED' && match.voteOpen,
+      ),
+      hotWindow: nearbyMatches.some(
+        (match) =>
+          match.status === 'LIVE' ||
+          match.status === 'SCHEDULED' ||
+          (match.status === 'FINISHED' && !match.voteOpen),
+      ),
+    };
+  } catch (error) {
+    process.stderr.write(`État public indisponible: ${errorMessage(error)}\n`);
+    return { available: false, voteOpened: false, hotWindow: false };
+  }
+}
+
 async function addHistoryRequests(snapshot, requests) {
   const queue = [...requests];
+  let completed = 0;
   const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
     while (queue.length) {
       const request = queue.shift();
@@ -312,15 +346,24 @@ async function addHistoryRequests(snapshot, requests) {
       const eventId = String(request.eventId);
       const eventPath = `event/${eventId}`;
       const lineupPath = `event/${eventId}/lineups`;
-      const [event, lineups] = await Promise.all([
-        sofaFetch(eventPath),
-        sofaFetch(lineupPath),
-      ]);
-      snapshot.responses[eventPath] = event;
-      snapshot.responses[lineupPath] = lineups;
+      try {
+        const [event, lineups] = await Promise.all([
+          sofaFetch(eventPath),
+          sofaFetch(lineupPath),
+        ]);
+        snapshot.responses[eventPath] = event;
+        snapshot.responses[lineupPath] = lineups;
+        completed += 1;
+      } catch (error) {
+        // Le rattrapage historique ne doit jamais empêcher le suivi du direct.
+        process.stderr.write(
+          `Historique différé ${eventId}: ${errorMessage(error)}\n`,
+        );
+      }
     }
   });
   await Promise.all(workers);
+  return completed;
 }
 
 async function synchronize() {
@@ -335,26 +378,46 @@ async function synchronize() {
       ? result.historyRequests
       : [];
     if (!requests.length) break;
-    await addHistoryRequests(snapshot, requests);
+    const completed = await addHistoryRequests(snapshot, requests);
+    if (!completed) break;
     result = await postSnapshot(snapshot, true);
   }
-  return result;
+  const monitor = await matchMonitorState();
+  return {
+    ...result,
+    hotWindow: monitor.available ? monitor.hotWindow : result.hotWindow,
+    voteOpened: monitor.voteOpened || Boolean(result.voteOpened),
+  };
 }
 
 try {
-  const first = await synchronize();
+  let result = await synchronize();
 
-  // GitHub limite la fréquence native du cron. Pendant la fenêtre chaude d'un
-  // match, ce même passage reste actif et relance la synchro toutes les 3 min.
-  const hotPasses = Math.max(
+  // Une exécution commencée autour du coup d'envoi reste responsable du match
+  // jusqu'à ce que PSG Hub confirme que le vote est réellement ouvert.
+  const hotIntervalMinutes = Math.max(
     1,
-    Math.min(5, Number(process.env.SOFASCORE_HOT_PASSES || 5)),
+    Math.min(15, Number(process.env.SOFASCORE_HOT_INTERVAL_MINUTES || 5)),
   );
-  if (first.hotWindow) {
-    for (let pass = 1; pass < hotPasses; pass += 1) {
-      await wait(3 * 60_000);
-      await synchronize();
+  const hotMaximumMinutes = Math.max(
+    30,
+    Math.min(225, Number(process.env.SOFASCORE_HOT_MAX_MINUTES || 210)),
+  );
+  const hotDeadline = Date.now() + hotMaximumMinutes * 60_000;
+  while (result.hotWindow && !result.voteOpened && Date.now() < hotDeadline) {
+    await wait(hotIntervalMinutes * 60_000);
+    try {
+      result = await synchronize();
+    } catch (error) {
+      process.stderr.write(
+        `${new Date().toISOString()} · passage différé: ${errorMessage(error)}\n`,
+      );
     }
+  }
+  if (result.hotWindow && !result.voteOpened) {
+    throw new Error(
+      `Le vote n'a pas été ouvert après ${hotMaximumMinutes} minutes de surveillance.`,
+    );
   }
 } finally {
   if (browser) {
@@ -365,3 +428,4 @@ try {
 }
 
 process.exit(0);
+
