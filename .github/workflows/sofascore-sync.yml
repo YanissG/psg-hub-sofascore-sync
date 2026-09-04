@@ -8,7 +8,9 @@ on:
       - '.github/workflows/sofascore-sync.yml'
   schedule:
     # Passage principal toutes les 15 minutes, loin du début de l'heure où
-    # GitHub peut retarder ou supprimer des événements planifiés.
+    # GitHub peut retarder ou supprimer des événements planifiés. Pendant un
+    # match, le passage reste actif et contrôle toutes les 5 minutes jusqu'à
+    # l'ouverture effective du vote.
     - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
 
@@ -22,7 +24,7 @@ concurrency:
 jobs:
   synchronize:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 240
     steps:
       - name: Récupérer le projet
         uses: actions/checkout@v4
@@ -38,3 +40,4 @@ jobs:
           PSG_HUB_SYNC_URL: ${{ vars.PSG_HUB_SYNC_URL }}
           SYNC_SECRET_TOKEN: ${{ secrets.SYNC_SECRET_TOKEN }}
           CHROME_PATH: /usr/bin/google-chrome
+
