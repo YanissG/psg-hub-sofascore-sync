@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: psg-hub-sofascore-sync
+  cancel-in-progress: false
+
 jobs:
   freshness:
     runs-on: ubuntu-latest
@@ -29,7 +33,7 @@ jobs:
     needs: freshness
     if: needs.freshness.outputs.stale == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 240
     steps:
       - name: Récupérer le robot
         uses: actions/checkout@v4
@@ -45,3 +49,4 @@ jobs:
           PSG_HUB_SYNC_URL: ${{ vars.PSG_HUB_SYNC_URL }}
           SYNC_SECRET_TOKEN: ${{ secrets.SYNC_SECRET_TOKEN }}
           CHROME_PATH: /usr/bin/google-chrome
+
