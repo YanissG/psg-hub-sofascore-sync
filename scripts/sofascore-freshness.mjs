@@ -1,7 +1,8 @@
-const baseUrl = String(process.env.PSG_HUB_SYNC_URL || '').replace(/\/$/, '');
+import { shouldRescue, validBaseUrl, finiteInteger } from './robot-policy.mjs';
+const baseUrl = process.env.PSG_HUB_SYNC_URL ? validBaseUrl(process.env.PSG_HUB_SYNC_URL) : '';
 const maximumAge = Math.max(
   60_000,
-  Number(process.env.SOFASCORE_MAX_AGE_MS || 12 * 60_000),
+  finiteInteger(process.env.SOFASCORE_MAX_AGE_MS, 12 * 60_000, 60_000, 30 * 60_000),
 );
 
 if (!baseUrl) {
@@ -11,6 +12,8 @@ if (!baseUrl) {
 
 try {
   const response = await fetch(`${baseUrl}/api/state`, {
+    redirect: 'error',
+    cache: 'no-store',
     headers: {
       accept: 'application/json',
       'user-agent': 'PSG-Hub-SofaScore-Watchdog/1.0',
@@ -19,13 +22,7 @@ try {
   });
   if (!response.ok) throw new Error(`PSG Hub ${response.status}`);
   const state = await response.json();
-  const lastSync = new Date(state?.predictionHub?.sync?.lastSync || 0).getTime();
-  const healthy =
-    state?.predictionHub?.sync?.enabled === true &&
-    !state?.predictionHub?.sync?.lastError &&
-    Number.isFinite(lastSync) &&
-    Date.now() - lastSync <= maximumAge;
-  process.stdout.write(healthy ? 'false' : 'true');
+  process.stdout.write(shouldRescue(state, Date.now(), maximumAge) ? 'true' : 'false');
 } catch {
   process.stdout.write('true');
 }

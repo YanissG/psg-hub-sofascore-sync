@@ -2,39 +2,28 @@ name: Relais temporaire SofaScore
 
 on:
   workflow_dispatch:
-    inputs:
-      prove_relay:
-        description: Prouver immédiatement la relance automatique
-        required: false
-        type: boolean
-        default: false
 
 permissions:
-  actions: write
   contents: read
 
 concurrency:
-  group: psg-hub-sofascore-bootstrap
+  group: psg-hub-sofascore-sync
   cancel-in-progress: false
 
 jobs:
   maintain-sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 355
+    timeout-minutes: 350
     steps:
-      - name: Récupérer le robot
-        uses: actions/checkout@v4
-      - name: Installer Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Installer le collecteur sécurisé
-        run: npm install --ignore-scripts --no-audit --no-fund
-      - name: Maintenir la synchronisation jusqu'au réveil du cron
-        run: node scripts/sofascore-bootstrap.mjs
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm test
+      - name: Suivre le match avec le collecteur unique
+        run: node scripts/sofascore-sync.mjs
         env:
           PSG_HUB_SYNC_URL: ${{ vars.PSG_HUB_SYNC_URL }}
           SYNC_SECRET_TOKEN: ${{ secrets.SYNC_SECRET_TOKEN }}
           CHROME_PATH: /usr/bin/google-chrome
-          GITHUB_TOKEN: ${{ github.token }}
-          SOFASCORE_BOOTSTRAP_PASSES: ${{ inputs.prove_relay && '1' || '22' }}

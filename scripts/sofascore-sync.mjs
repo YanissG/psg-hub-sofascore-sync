@@ -1,9 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import { chromium } from 'playwright';
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+import { validBaseUrl, finiteInteger } from './robot-policy.mjs';
+import { runMonitor } from './robot-runner.mjs';
 
-const baseUrl = String(
-  process.env.PSG_HUB_SYNC_URL || '',
-).replace(/\/$/, '');
+const baseUrl = process.env.PSG_HUB_SYNC_URL ? validBaseUrl(process.env.PSG_HUB_SYNC_URL) : '';
 const token = String(process.env.SYNC_SECRET_TOKEN || '');
 const PSG_ID = 1644;
 const API_SOURCES = [
@@ -19,11 +21,6 @@ const API_SOURCES = [
   { base: 'https://api.sofascore.com/api/v1', query: '' },
 ];
 
-if (!baseUrl || !token) {
-  throw new Error(
-    'PSG_HUB_SYNC_URL et SYNC_SECRET_TOKEN doivent être configurés.',
-  );
-}
 
 const endpoint = `${baseUrl}/api/sofascore-sync`;
 const wait = (milliseconds) =>
@@ -42,12 +39,14 @@ const browserHeaders = () => ({
 
 let browser;
 let page;
-let directBlocked = false;
+let browserReady;
+let preferredSource;
 
 async function directFetch(path) {
   let lastError;
-  for (const source of API_SOURCES) {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+  const sources = preferredSource ? [preferredSource, ...API_SOURCES.filter((source) => source !== preferredSource)] : API_SOURCES;
+  for (const source of sources) {
+    for (let attempt = 0; attempt < 1; attempt += 1) {
       try {
         const separator = path.includes('?') ? '&' : '?';
         const query = [
@@ -60,10 +59,14 @@ async function directFetch(path) {
           `${source.base}/${path}${separator}${query}`,
           {
             headers: browserHeaders(),
-            signal: AbortSignal.timeout(20_000),
+            signal: AbortSignal.timeout(5_000),
           },
         );
-        if (response.ok) return response.json();
+        if (response.ok) {
+          const data = await response.json();
+          preferredSource = source;
+          return data;
+        }
         lastError = new Error(`SofaScore ${response.status} sur ${path}`);
       } catch (error) {
         lastError = error;
@@ -75,7 +78,7 @@ async function directFetch(path) {
 }
 
 async function browserFetch(path) {
-  if (!browser) {
+  if (!browserReady) browserReady = (async () => {
     browser = await chromium.launch({
       headless: true,
       executablePath: process.env.CHROME_PATH || undefined,
@@ -89,10 +92,16 @@ async function browserFetch(path) {
     page = await context.newPage();
     await page.goto('https://www.sofascore.com/', {
       waitUntil: 'domcontentloaded',
-      timeout: 45_000,
+      timeout: 20_000,
     });
     await wait(1_500);
-  }
+  })().catch(async (error) => {
+    await browser?.close().catch(() => undefined);
+    browser = undefined;
+    browserReady = undefined;
+    throw error;
+  });
+  await browserReady;
 
   const result = await page.evaluate(
     async ({ requestPath, requestedWith }) => {
@@ -105,6 +114,7 @@ async function browserFetch(path) {
             'x-requested-with': requestedWith,
           },
           credentials: 'include',
+          signal: AbortSignal.timeout(20_000),
         },
       );
       return {
@@ -126,13 +136,10 @@ async function browserFetch(path) {
 
 async function sofaFetch(path) {
   let directError;
-  if (!directBlocked) {
-    try {
-      return await directFetch(path);
-    } catch (error) {
-      directError = error;
-      directBlocked = /SofaScore 403/.test(errorMessage(error));
-    }
+  try {
+    return await directFetch(path);
+  } catch (error) {
+    directError = error;
   }
   try {
     return await browserFetch(path);
@@ -239,7 +246,7 @@ async function buildSnapshot() {
     .sort((left, right) => right.startTimestamp - left.startTimestamp)
     .slice(0, 4);
   const now = Date.now() / 1000;
-  const nearKickoff = nextEvents.filter(
+  const nearKickoff = [...lastEvents, ...nextEvents].filter(
     (event) =>
       Math.abs(event.startTimestamp - now) <= 6 * 60 * 60 &&
       !isFinished(event),
@@ -267,73 +274,58 @@ async function buildSnapshot() {
   };
 }
 
-async function postSnapshot(snapshot, deep = false) {
-  snapshot.generatedAt = new Date().toISOString();
-  const requestUrl = `${endpoint}${deep ? '?deep=1' : ''}`;
-  const response = await fetch(requestUrl, {
+export async function postSnapshot(snapshot, deep = false) {
+  const response = await fetch(`${endpoint}${deep ? '?deep=1' : ''}`, {
     method: 'POST',
-    // Une redirection vers un autre domaine retire l'en-tête Authorization.
-    // On l'interdit pour signaler immédiatement une ancienne URL de production.
     redirect: 'manual',
     headers: {
-      authorization: `Bearer ${token}`,
-      accept: 'application/json',
-      'content-type': 'application/json',
-      'user-agent': 'PSG-Hub-Automation/3.0',
+      authorization: `Bearer ${token}`, accept: 'application/json',
+      'content-type': 'application/json', 'user-agent': 'PSG-Hub-Automation/4.0',
     },
     body: JSON.stringify({ snapshot }),
-    signal: AbortSignal.timeout(120_000),
+    signal: AbortSignal.timeout(90_000),
   });
-  if (response.status >= 300 && response.status < 400) {
-    const location = response.headers.get('location') || 'destination inconnue';
-    throw new Error(
-      `Adresse PSG Hub obsolète : ${requestUrl} redirige vers ${location}. ` +
-        'PSG_HUB_SYNC_URL doit pointer directement vers le domaine public.',
-    );
-  }
-  const result = await response.json().catch(() => ({}));
+  if (response.status >= 300 && response.status < 400)
+    throw Object.assign(new Error('Adresse PSG Hub obsolète : redirection interdite.'), { permanent: true });
+  const result = await response.json();
   if (!response.ok) {
-    throw new Error(
-      `Synchronisation refusée (${response.status}): ${result.error || 'erreur inconnue'}`,
-    );
+    if (response.status === 502 && Array.isArray(result.matchesState)) return result;
+    throw Object.assign(new Error(`Synchronisation refusée (${response.status}): ${result.error || 'erreur inconnue'}`),
+      { permanent: [400, 401, 403, 404, 405].includes(response.status) });
   }
-  process.stdout.write(
-    `${new Date().toISOString()} · ${result.matches || 0} matchs · ${result.players || 0} joueurs\n`,
-  );
+  if (result.ok !== true || !result.lastSync) throw new Error('Réponse de synchronisation invalide.');
+  process.stdout.write(`${new Date().toISOString()} · ${result.matches || 0} matchs · ${result.players || 0} joueurs · mode ${snapshot.mode || 'complet'}\n`);
   return result;
 }
 
-async function matchMonitorState() {
-  try {
-    const response = await fetch(`${baseUrl}/api/state`, {
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!response.ok) throw new Error(`PSG Hub ${response.status}`);
-    const state = await response.json();
-    const now = Date.now();
-    const monitorFrom = now - 5 * 60 * 60_000;
-    const monitorUntil = now + 15 * 60_000;
-    const nearbyMatches = (state.matches ?? []).filter((match) => {
-      const kickoff = new Date(match.date).getTime();
-      return kickoff >= monitorFrom && kickoff <= monitorUntil;
-    });
-    return {
-      available: true,
-      voteOpened: nearbyMatches.some(
-        (match) => match.status === 'FINISHED' && match.voteOpen,
-      ),
-      hotWindow: nearbyMatches.some(
-        (match) =>
-          match.status === 'LIVE' ||
-          match.status === 'SCHEDULED' ||
-          (match.status === 'FINISHED' && !match.voteOpen),
-      ),
-    };
-  } catch (error) {
-    process.stderr.write(`État public indisponible: ${errorMessage(error)}\n`);
-    return { available: false, voteOpened: false, hotWindow: false };
+async function readMonitorState() {
+  const response = await fetch(endpoint, {
+    method: 'POST', redirect: 'manual',
+    headers: { accept: 'application/json', 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ status: true }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) throw Object.assign(new Error(`État PSG Hub ${response.status}`),
+    { permanent: response.status >= 300 && response.status < 500 });
+  const state = await response.json();
+  if (!Array.isArray(state.matches)) throw new Error('État PSG Hub incomplet.');
+  return state;
+}
+
+export async function buildLiveSnapshot(matches, fetchSofa = sofaFetch) {
+  const responses = {};
+  for (const match of matches) {
+    const path = `event/${Number(match.sofascoreId)}`;
+    const response = await fetchSofa(path);
+    if (Number(response.event?.id) !== Number(match.sofascoreId)) throw new Error('Identifiant SofaScore incohérent.');
+    responses[path] = response;
+    const details = ['lineups', ...(isFinished(response.event) ? ['incidents'] : [])];
+    for (const detail of details) {
+      try { responses[`${path}/${detail}`] = await fetchSofa(`${path}/${detail}`); }
+      catch (error) { process.stderr.write(`Détail différé ${path}/${detail}: ${errorMessage(error)}\n`); }
+    }
   }
+  return { schemaVersion: 1, mode: 'live', generatedAt: new Date().toISOString(), responses };
 }
 
 async function addHistoryRequests(snapshot, requests) {
@@ -369,63 +361,42 @@ async function addHistoryRequests(snapshot, requests) {
 async function synchronize() {
   const snapshot = await buildSnapshot();
   let result = await postSnapshot(snapshot);
-  const historyPasses = Math.max(
-    0,
-    Math.min(6, Number(process.env.SOFASCORE_HISTORY_PASSES || 4)),
-  );
+  if (result.hotWindow) return result;
+  const historyPasses = finiteInteger(process.env.SOFASCORE_HISTORY_PASSES, 1, 0, 4);
   for (let pass = 0; pass < historyPasses; pass += 1) {
-    const requests = Array.isArray(result.historyRequests)
-      ? result.historyRequests
-      : [];
+    const requests = Array.isArray(result.historyRequests) ? result.historyRequests : [];
     if (!requests.length) break;
-    const completed = await addHistoryRequests(snapshot, requests);
-    if (!completed) break;
-    result = await postSnapshot(snapshot, true);
-  }
-  const monitor = await matchMonitorState();
-  return {
-    ...result,
-    hotWindow: monitor.available ? monitor.hotWindow : result.hotWindow,
-    voteOpened: monitor.voteOpened || Boolean(result.voteOpened),
-  };
-}
-
-try {
-  let result = await synchronize();
-
-  // Une exécution commencée autour du coup d'envoi reste responsable du match
-  // jusqu'à ce que PSG Hub confirme que le vote est réellement ouvert.
-  const hotIntervalMinutes = Math.max(
-    1,
-    Math.min(15, Number(process.env.SOFASCORE_HOT_INTERVAL_MINUTES || 5)),
-  );
-  const hotMaximumMinutes = Math.max(
-    30,
-    Math.min(225, Number(process.env.SOFASCORE_HOT_MAX_MINUTES || 210)),
-  );
-  const hotDeadline = Date.now() + hotMaximumMinutes * 60_000;
-  while (result.hotWindow && !result.voteOpened && Date.now() < hotDeadline) {
-    await wait(hotIntervalMinutes * 60_000);
     try {
-      result = await synchronize();
+      const completed = await addHistoryRequests(snapshot, requests);
+      if (!completed) break;
+      result = await postSnapshot(snapshot, true);
     } catch (error) {
-      process.stderr.write(
-        `${new Date().toISOString()} · passage différé: ${errorMessage(error)}\n`,
-      );
+      process.stderr.write(`Archives différées: ${errorMessage(error)}\n`);
+      break;
     }
   }
-  if (result.hotWindow && !result.voteOpened) {
-    throw new Error(
-      `Le vote n'a pas été ouvert après ${hotMaximumMinutes} minutes de surveillance.`,
-    );
-  }
-} finally {
-  if (browser) {
-    const closeDeadline = setTimeout(() => process.exit(0), 5_000);
-    await browser.close().catch(() => undefined);
-    clearTimeout(closeDeadline);
+  return result;
+}
+
+export async function main() {
+  if (!baseUrl || !token) throw new Error('PSG_HUB_SYNC_URL et SYNC_SECRET_TOKEN doivent être configurés.');
+  try {
+    await runMonitor({
+      readState: readMonitorState,
+      syncLive: async (matches) => postSnapshot(await buildLiveSnapshot(matches)),
+      syncFull: synchronize, sleep: wait,
+      log: (message) => process.stderr.write(`${new Date().toISOString()} · ${message}\n`),
+      maximumMs: finiteInteger(process.env.SOFASCORE_HOT_MAX_MINUTES, 325, 30, 325) * 60_000,
+    });
+  } finally {
+    if (browser) await Promise.race([browser.close().catch(() => undefined), wait(5_000)]);
   }
 }
 
-process.exit(0);
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().then(() => process.exit(0), (error) => {
+    process.stderr.write(`${errorMessage(error)}\n`);
+    process.exit(1);
+  });
+}
 

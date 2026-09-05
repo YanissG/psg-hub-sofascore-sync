@@ -33,7 +33,7 @@ jobs:
     needs: freshness
     if: needs.freshness.outputs.stale == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 350
     steps:
       - name: Récupérer le robot
         uses: actions/checkout@v4
@@ -42,7 +42,9 @@ jobs:
         with:
           node-version: 22
       - name: Installer le collecteur sécurisé
-        run: npm install --ignore-scripts --no-audit --no-fund
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Vérifier les scénarios de panne
+        run: npm test
       - name: Rattraper la synchronisation manquante
         run: node scripts/sofascore-sync.mjs
         env:

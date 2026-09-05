@@ -7,6 +7,10 @@
   "engines": {
     "node": ">=22"
   },
+  "scripts": {
+    "test": "node --test scripts/robot.test.mjs",
+    "sync": "node scripts/sofascore-sync.mjs"
+  },
   "dependencies": {
     "playwright": "1.55.0"
   }

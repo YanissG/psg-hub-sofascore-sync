@@ -5,13 +5,14 @@ on:
     branches:
       - main
     paths:
-      - '.github/workflows/sofascore-sync.yml'
+      - '.github/workflows/**'
+      - 'scripts/**'
+      - 'package*.json'
   schedule:
-    # Passage principal toutes les 15 minutes, loin du début de l'heure où
-    # GitHub peut retarder ou supprimer des événements planifiés. Pendant un
-    # match, le passage reste actif et contrôle toutes les 5 minutes jusqu'à
-    # l'ouverture effective du vote.
-    - cron: '7,22,37,52 * * * *'
+    # Réveil de secours toutes les 5 minutes. Hors match, le contrôle de
+    # fraîcheur limite les collectes à environ 15 minutes. De H-90 min jusqu'au
+    # vote ouvert, un même processus contrôle le match toutes les 5 minutes.
+    - cron: '2-59/5 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -24,7 +25,7 @@ concurrency:
 jobs:
   synchronize:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 350
     steps:
       - name: Récupérer le projet
         uses: actions/checkout@v4
@@ -33,11 +34,21 @@ jobs:
         with:
           node-version: 22
       - name: Installer le collecteur sécurisé
-        run: npm install --ignore-scripts --no-audit --no-fund
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Vérifier les scénarios de panne
+        run: npm test
+      - name: Contrôler si un passage est nécessaire
+        id: freshness
+        shell: bash
+        env:
+          PSG_HUB_SYNC_URL: ${{ vars.PSG_HUB_SYNC_URL }}
+        run: echo "stale=$(node scripts/sofascore-freshness.mjs)" >> "$GITHUB_OUTPUT"
       - name: Mettre à jour PSG Hub
+        if: steps.freshness.outputs.stale == 'true' || github.event_name != 'schedule'
         run: node scripts/sofascore-sync.mjs
         env:
           PSG_HUB_SYNC_URL: ${{ vars.PSG_HUB_SYNC_URL }}
           SYNC_SECRET_TOKEN: ${{ secrets.SYNC_SECRET_TOKEN }}
           CHROME_PATH: /usr/bin/google-chrome
+          SOFASCORE_HOT_MAX_MINUTES: '325'
 
