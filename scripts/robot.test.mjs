@@ -12,7 +12,7 @@ import {
   finiteInteger,
 } from './robot-policy.mjs';
 import { runMonitor } from './robot-runner.mjs';
-import { buildLiveSnapshot } from './sofascore-sync.mjs';
+import { buildLiveSnapshot, mergeMonitorState } from './sofascore-sync.mjs';
 
 const minute = 60_000;
 const hour = 60 * minute;
@@ -312,6 +312,15 @@ void test('configuration rejects insecure URLs and invalid durations fall back s
     assert.throws(() => validBaseUrl(url));
   }
   assert.equal(finiteInteger('oops', 325, 30, 325), 325);
+});
+
+void test('the compact match state receives the persisted sync time', () => {
+  const merged = mergeMonitorState(
+    { matches: [match()] },
+    state([], start),
+  );
+  assert.equal(merged.predictionHub.sync.lastSync, new Date(start).toISOString());
+  assert.throws(() => mergeMonitorState({ matches: null }, state([], start)), /incomplet/);
 });
 
 void test('live snapshot only asks for current event, lineup and final incidents', async () => {

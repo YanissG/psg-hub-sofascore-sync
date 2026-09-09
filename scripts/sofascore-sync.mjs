@@ -298,18 +298,33 @@ export async function postSnapshot(snapshot, deep = false) {
   return result;
 }
 
+export function mergeMonitorState(automationState, publicState) {
+  if (!Array.isArray(automationState?.matches)) throw new Error('État PSG Hub incomplet.');
+  return {
+    ...automationState,
+    predictionHub: publicState?.predictionHub,
+  };
+}
+
 async function readMonitorState() {
-  const response = await fetch(endpoint, {
+  const [response, publicState] = await Promise.all([
+    fetch(endpoint, {
     method: 'POST', redirect: 'manual',
     headers: { accept: 'application/json', 'content-type': 'application/json', authorization: `Bearer ${token}` },
     body: JSON.stringify({ status: true }),
     signal: AbortSignal.timeout(20_000),
-  });
+    }),
+    fetch(`${baseUrl}/api/state`, {
+      redirect: 'manual',
+      cache: 'no-store',
+      headers: { accept: 'application/json', 'user-agent': 'PSG-Hub-Automation/4.0' },
+      signal: AbortSignal.timeout(20_000),
+    }).then((result) => result.ok ? result.json() : null).catch(() => null),
+  ]);
   if (!response.ok) throw Object.assign(new Error(`État PSG Hub ${response.status}`),
     { permanent: response.status >= 300 && response.status < 500 });
   const state = await response.json();
-  if (!Array.isArray(state.matches)) throw new Error('État PSG Hub incomplet.');
-  return state;
+  return mergeMonitorState(state, publicState);
 }
 
 export async function buildLiveSnapshot(matches, fetchSofa = sofaFetch) {
