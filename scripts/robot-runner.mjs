@@ -1,5 +1,13 @@
 import { lastSyncTime, monitorTargets, POLL_MS, syncInterval } from './robot-policy.mjs';
 
+function predictionPreparationMissing(state) {
+  const hub = state?.predictionHub;
+  return Boolean(
+    hub?.activeMatchId &&
+      (!hub.market || !Array.isArray(hub.options) || hub.options.length === 0),
+  );
+}
+
 // All time and I/O are injected so a full match can be tested without touching production.
 export async function runMonitor({ readState, syncLive, syncFull, sleep, now = Date.now, log = () => {}, maximumMs = 325 * 60_000, stayAlive = false }) {
   const started = now();
@@ -31,11 +39,12 @@ export async function runMonitor({ readState, syncLive, syncFull, sleep, now = D
       const hadTargets = targets.length > 0;
       const interval = syncInterval(matches, now());
       const syncHealth = state?.predictionHub?.sync;
-      const due = !syncHealth?.enabled || Boolean(syncHealth?.lastError) ||
+      const predictionRepairDue = predictionPreparationMissing(state);
+      const due = predictionRepairDue || !syncHealth?.enabled || Boolean(syncHealth?.lastError) ||
         !Number.isFinite(knownLastSync) ||
         knownLastSync > tick + 60_000 || tick - knownLastSync >= interval;
       let result;
-      if (due && hadTargets) {
+      if (due && hadTargets && !predictionRepairDue) {
         result = await syncLive(targets);
         // Only authoritative state for these exact matches can end monitoring.
       } else if (due) {
@@ -81,3 +90,4 @@ export async function runMonitor({ readState, syncLive, syncFull, sleep, now = D
   }
   return { ok: true, completed: true };
 }
+
