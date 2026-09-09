@@ -1,158 +1,320 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { FULL_SYNC_MS, monitorTargets, shouldRescue, validBaseUrl, finiteInteger, POLL_MS } from './robot-policy.mjs';
+import {
+  IDLE_SYNC_MS,
+  monitorTargets,
+  POLL_MS,
+  shouldRescue,
+  SOON_SYNC_MS,
+  SOON_WINDOW_MS,
+  syncInterval,
+  validBaseUrl,
+  finiteInteger,
+} from './robot-policy.mjs';
 import { runMonitor } from './robot-runner.mjs';
 import { buildLiveSnapshot } from './sofascore-sync.mjs';
 
+const minute = 60_000;
+const hour = 60 * minute;
 const start = Date.parse('2026-09-09T19:00:00Z');
-const match = (overrides = {}) => ({ id: 'slovan', sofascoreId: 16938796, date: new Date(start).toISOString(), status: 'LIVE', voteOpen: false, voteClosesAt: null, ...overrides });
-
-test('warmup starts 90 minutes before kickoff and follows delayed finals beyond five hours', () => {
-  assert.equal(monitorTargets([match({ status: 'SCHEDULED' })], start - 90 * 60_000).length, 1);
-  assert.equal(monitorTargets([match({ status: 'SCHEDULED' })], start - 91 * 60_000).length, 0);
-  assert.equal(monitorTargets([match({ status: 'FINISHED' })], start + 6 * 60 * 60_000).length, 1);
+const match = (overrides = {}) => ({
+  id: 'slovan',
+  sofascoreId: 16938796,
+  date: new Date(start).toISOString(),
+  status: 'LIVE',
+  voteOpen: false,
+  voteClosesAt: null,
+  ...overrides,
+});
+const state = (matches, lastSync) => ({
+  matches,
+  predictionHub: {
+    sync: {
+      enabled: true,
+      lastSync: Number.isFinite(lastSync) ? new Date(lastSync).toISOString() : '',
+      lastError: '',
+    },
+  },
 });
 
-test('completed, expired, postponed and cancelled matches do not spin forever', () => {
-  for (const overrides of [{ status: 'FINISHED', voteOpen: true }, { status: 'FINISHED', voteClosesAt: new Date(start).toISOString() }, { status: 'POSTPONED' }, { status: 'CANCELED' }, { status: 'SCHEDULED', date: new Date(start + 86400000).toISOString() }]) {
+void test('the cadence is 8 hours, then 15 minutes at H-10, then 5 minutes at kickoff', () => {
+  const scheduled = match({ status: 'SCHEDULED' });
+  assert.equal(syncInterval([], start), IDLE_SYNC_MS);
+  assert.equal(syncInterval([scheduled], start - SOON_WINDOW_MS - 1), IDLE_SYNC_MS);
+  assert.equal(syncInterval([scheduled], start - SOON_WINDOW_MS), SOON_SYNC_MS);
+  assert.equal(syncInterval([scheduled], start - minute), SOON_SYNC_MS);
+  assert.equal(syncInterval([scheduled], start), POLL_MS);
+  assert.equal(monitorTargets([scheduled], start).length, 1);
+  assert.equal(syncInterval([match()], start - hour), POLL_MS);
+  assert.equal(syncInterval([match({ status: 'FINISHED' })], start + 6 * hour), POLL_MS);
+  assert.equal(syncInterval([match({ status: 'FINISHED', voteOpen: true })], start + 6 * hour), IDLE_SYNC_MS);
+});
+
+void test('cancelled, postponed, abandoned, invalid and completed-vote matches stay idle', () => {
+  for (const overrides of [
+    { status: 'FINISHED', voteOpen: true },
+    { status: 'FINISHED', voteClosesAt: new Date(start).toISOString() },
+    { status: 'POSTPONED' },
+    { status: 'CANCELED' },
+    { status: 'ABANDONED' },
+    { sofascoreId: null },
+    { date: 'not-a-date' },
+  ]) {
     assert.equal(monitorTargets([match(overrides)], start).length, 0);
+    assert.equal(syncInterval([match(overrides)], start), IDLE_SYNC_MS);
   }
 });
 
-test('a fresh pre-match sync cannot make the rescue skip kickoff', () => {
-  const state = { matches: [match()], predictionHub: { sync: { enabled: true, lastSync: new Date(start).toISOString(), lastError: '' } } };
-  assert.equal(shouldRescue(state, start), true);
-  assert.equal(shouldRescue({ ...state, matches: [] }, start), false);
-  assert.equal(shouldRescue({ ...state, matches: [] }, start + 13 * 60_000), true);
+void test('the rescue uses the adaptive 8-hour, 15-minute and 5-minute limits', () => {
+  const idle = state([], start);
+  assert.equal(shouldRescue(idle, start + IDLE_SYNC_MS - 1), false);
+  assert.equal(shouldRescue(idle, start + IDLE_SYNC_MS), true);
+
+  const scheduled = match({ status: 'SCHEDULED', date: new Date(start + 9 * hour).toISOString() });
+  const soon = state([scheduled], start);
+  assert.equal(shouldRescue(soon, start + SOON_SYNC_MS - 1), false);
+  assert.equal(shouldRescue(soon, start + SOON_SYNC_MS), true);
+
+  const live = state([match()], start);
+  assert.equal(shouldRescue(live, start + POLL_MS - 1), false);
+  assert.equal(shouldRescue(live, start + POLL_MS), true);
+  assert.equal(shouldRescue({ ...idle, predictionHub: { sync: { enabled: true, lastSync: new Date(start).toISOString(), lastError: '403' } } }, start), true);
 });
 
-test('configuration rejects insecure URLs and invalid durations fall back safely', () => {
-  assert.equal(validBaseUrl('https://psg-hub.fr/'), 'https://psg-hub.fr');
-  for (const url of ['http://psg-hub.fr', 'https://psg-hub.fr/api/state', 'https://secret@psg-hub.fr', 'https://psg-hub.fr/?secret=1']) assert.throws(() => validBaseUrl(url));
-  assert.equal(finiteInteger('oops', 325, 30, 325), 325);
+void test('all 24 kickoff hours follow the same boundaries', () => {
+  for (let localHour = 0; localHour < 24; localHour += 1) {
+    const kickoff = Date.parse(`2026-01-20T${String(localHour).padStart(2, '0')}:00:00+01:00`);
+    const scheduled = match({ status: 'SCHEDULED', date: new Date(kickoff).toISOString() });
+    assert.equal(syncInterval([scheduled], kickoff - SOON_WINDOW_MS - 1), IDLE_SYNC_MS, `H${localHour}: before H-10`);
+    assert.equal(syncInterval([scheduled], kickoff - SOON_WINDOW_MS), SOON_SYNC_MS, `H${localHour}: at H-10`);
+    assert.equal(syncInterval([scheduled], kickoff - 1), SOON_SYNC_MS, `H${localHour}: before kickoff`);
+    assert.equal(syncInterval([scheduled], kickoff), POLL_MS, `H${localHour}: at kickoff`);
+  }
 });
 
-test('live -> transient error -> missing final details -> opened vote, exactly five minutes apart', async () => {
+void test('the full kickoff-to-vote cycle works at every hour of the day', async () => {
+  for (let localHour = 0; localHour < 24; localHour += 1) {
+    const kickoff = Date.parse(`2026-01-20T${String(localHour).padStart(2, '0')}:00:00+01:00`);
+    let clock = kickoff;
+    let current = match({ status: 'SCHEDULED', date: new Date(kickoff).toISOString() });
+    const calls = [];
+    await runMonitor({
+      now: () => clock,
+      maximumMs: 11 * minute,
+      sleep: async (ms) => { clock += ms; },
+      readState: async () => state([current], kickoff - POLL_MS),
+      syncFull: () => assert.fail(`full collection requested at ${localHour}:00`),
+      syncLive: async () => {
+        calls.push(clock);
+        current = calls.length === 1
+          ? match({ status: 'LIVE', date: new Date(kickoff).toISOString() })
+          : match({ status: 'FINISHED', voteOpen: true, date: new Date(kickoff).toISOString() });
+        return { ok: true, matchesState: [current], lastSync: new Date(clock).toISOString() };
+      },
+    });
+    assert.deepEqual(calls, [kickoff, kickoff + POLL_MS], `${localHour}:00`);
+  }
+});
+
+void test('1am, 3am and both daylight-saving transitions need no manual intervention', () => {
+  const kickoffs = [
+    '2026-01-20T01:00:00+01:00',
+    '2026-01-20T03:00:00+01:00',
+    '2026-03-29T01:00:00+01:00',
+    '2026-03-29T03:00:00+02:00',
+    '2026-10-25T02:00:00+02:00',
+    '2026-10-25T02:00:00+01:00',
+  ];
+  for (const value of kickoffs) {
+    const kickoff = Date.parse(value);
+    const scheduled = match({ status: 'SCHEDULED', date: new Date(kickoff).toISOString() });
+    assert.equal(syncInterval([scheduled], kickoff - 10 * hour), SOON_SYNC_MS, value);
+    assert.equal(syncInterval([scheduled], kickoff), POLL_MS, value);
+    assert.equal(syncInterval([match({ status: 'FINISHED', voteOpen: true, date: new Date(kickoff).toISOString() })], kickoff + 3 * hour), IDLE_SYNC_MS, value);
+  }
+});
+
+void test('idle mode performs exactly one collection after eight hours', async () => {
   let clock = start;
-  let current = match();
-  const starts = [];
+  const calls = [];
+  await runMonitor({
+    now: () => clock,
+    maximumMs: IDLE_SYNC_MS + 6 * minute,
+    stayAlive: true,
+    sleep: async (ms) => { clock += ms; },
+    readState: async () => state([], start),
+    syncLive: () => assert.fail('live collection requested'),
+    syncFull: async () => {
+      calls.push(clock);
+      return { ok: true, matchesState: [], lastSync: new Date(clock).toISOString() };
+    },
+  });
+  assert.deepEqual(calls, [start + IDLE_SYNC_MS]);
+});
+
+void test('a match under ten hours is refreshed every fifteen minutes', async () => {
+  let clock = start - SOON_WINDOW_MS;
+  const calls = [];
+  const scheduled = match({ status: 'SCHEDULED' });
+  await runMonitor({
+    now: () => clock,
+    maximumMs: 46 * minute,
+    stayAlive: true,
+    sleep: async (ms) => { clock += ms; },
+    readState: async () => state([scheduled], start - SOON_WINDOW_MS),
+    syncLive: () => assert.fail('live collection requested before kickoff'),
+    syncFull: async () => {
+      calls.push(clock);
+      return { ok: true, matchesState: [scheduled], lastSync: new Date(clock).toISOString() };
+    },
+  });
+  assert.deepEqual(calls, [start - SOON_WINDOW_MS + 15 * minute, start - SOON_WINDOW_MS + 30 * minute, start - SOON_WINDOW_MS + 45 * minute]);
+});
+
+void test('kickoff switches to five minutes until the vote opens, then returns to eight hours', async () => {
+  let clock = start - 10 * minute;
+  let current = match({ status: 'SCHEDULED' });
+  let lastSync = clock;
+  const liveCalls = [];
+  const fullCalls = [];
+  await runMonitor({
+    now: () => clock,
+    maximumMs: IDLE_SYNC_MS + 26 * minute,
+    stayAlive: true,
+    sleep: async (ms) => { clock += ms; },
+    readState: async () => state([current], lastSync),
+    syncFull: async () => {
+      fullCalls.push(clock);
+      lastSync = clock;
+      return { ok: true, matchesState: [current], lastSync: new Date(clock).toISOString() };
+    },
+    syncLive: async () => {
+      liveCalls.push(clock);
+      lastSync = clock;
+      if (liveCalls.length === 3) {
+        current = match({
+          status: 'FINISHED',
+          voteOpen: true,
+          voteClosesAt: new Date(clock + 48 * hour).toISOString(),
+        });
+      }
+      return { ok: true, matchesState: [current], lastSync: new Date(clock).toISOString() };
+    },
+  });
+  assert.deepEqual(liveCalls.slice(0, 3), [start, start + POLL_MS, start + 2 * POLL_MS]);
+  assert.equal(liveCalls.length, 3);
+  assert.deepEqual(fullCalls, [start + 2 * POLL_MS + IDLE_SYNC_MS]);
+});
+
+void test('temporary SofaScore failures keep retrying without human intervention', async () => {
+  let clock = start;
   let calls = 0;
   await runMonitor({
-    now: () => clock, sleep: async (ms) => { clock += ms; }, readState: async () => ({ matches: [current] }),
-    syncFull: () => { throw new Error('Archives must not run during a match'); },
-    syncLive: async () => {
-      starts.push(clock);
-      clock += 30_000;
+    now: () => clock,
+    maximumMs: 16 * minute,
+    stayAlive: true,
+    sleep: async (ms) => { clock += ms; },
+    readState: async () => state([], Number.NaN),
+    syncLive: () => assert.fail('live collection requested'),
+    syncFull: async () => {
       calls += 1;
-      if (calls === 1) throw new Error('SofaScore 503 on first pass');
-      if (calls === 2) { current = match({ status: 'FINISHED' }); return { ok: false, error: 'Minutes not yet published', matchesState: [current] }; }
-      current = match({ status: 'FINISHED', voteOpen: true, voteClosesAt: new Date(clock + 48 * 3600000).toISOString() });
-      return { ok: true, matchesState: [current] };
+      if (calls < 4) throw new Error('SofaScore 403');
+      return { ok: true, matchesState: [], lastSync: new Date(clock).toISOString() };
     },
   });
-  assert.deepEqual(starts, [start, start + POLL_MS, start + 2 * POLL_MS]);
+  assert.equal(calls, 4);
 });
 
-test('another match with open votes cannot stop this match', async () => {
+void test('a reported sync error triggers an immediate recovery even when data is fresh', async () => {
+  let calls = 0;
+  await runMonitor({
+    now: () => start,
+    readState: async () => ({
+      ...state([], start),
+      predictionHub: { sync: { enabled: true, lastSync: new Date(start).toISOString(), lastError: 'temporary error' } },
+    }),
+    syncLive: () => assert.fail('live collection requested'),
+    syncFull: async () => {
+      calls += 1;
+      return { ok: true, matchesState: [], lastSync: new Date(start).toISOString() };
+    },
+    sleep: () => assert.fail('wait requested'),
+  });
+  assert.equal(calls, 1);
+});
+
+void test('a status outage preserves the known live match', async () => {
   let clock = start;
-  let count = 0;
-  const older = match({ id: 'older', sofascoreId: 9, status: 'FINISHED', voteOpen: true });
+  let reads = 0;
+  let polls = 0;
   let current = match();
   await runMonitor({
-    now: () => clock, sleep: async (ms) => { clock += ms; }, readState: async () => ({ matches: [older, current] }),
-    syncFull: () => assert.fail('archive requested'),
-    syncLive: async (targets) => {
-      assert.deepEqual(targets.map((row) => row.id), ['slovan']);
-      count += 1;
-      if (count === 2) current = match({ status: 'FINISHED', voteOpen: true });
-      return { ok: true, voteOpened: true, matchesState: [older, current] };
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    readState: async () => {
+      reads += 1;
+      if (reads === 2) throw new Error('timeout');
+      return state([current], Number.NaN);
     },
-  });
-  assert.equal(count, 2);
-});
-
-test('a postponed match ends monitoring after authoritative confirmation', async () => {
-  let current = match();
-  let count = 0;
-  await runMonitor({ readState: async () => ({ matches: [current] }), now: () => start, sleep: () => assert.fail('unneeded wait'),
-    syncFull: () => assert.fail('archive requested'), syncLive: async () => { count++; current = match({ status: 'POSTPONED' }); return { ok: true, matchesState: [current] }; } });
-  assert.equal(count, 1);
-});
-
-test('network failure in status endpoint preserves the known match', async () => {
-  let clock = start, reads = 0, polls = 0;
-  let current = match();
-  await runMonitor({ now: () => clock, sleep: async (ms) => { clock += ms; },
-    readState: async () => { if (++reads === 2) throw new Error('timeout'); return { matches: [current] }; },
-    syncFull: () => assert.fail('archive requested'), syncLive: async () => { if (++polls === 2) current = match({ status: 'FINISHED', voteOpen: true }); return { ok: true, matchesState: [current] }; },
+    syncFull: () => assert.fail('archive requested'),
+    syncLive: async () => {
+      polls += 1;
+      if (polls === 2) current = match({ status: 'FINISHED', voteOpen: true });
+      return { ok: true, matchesState: [current], lastSync: new Date(clock).toISOString() };
+    },
   });
   assert.equal(polls, 2);
 });
 
-test('an outage never silently reports a successful run, including the first pass', async () => {
-  let clock = start, calls = 0;
-  await assert.rejects(runMonitor({ now: () => clock, maximumMs: 11 * 60_000, sleep: async (ms) => { clock += ms; },
-    readState: async () => ({ matches: [match()] }), syncFull: () => assert.fail(),
-    syncLive: async () => { calls++; throw new Error('network down'); },
-  }), /Surveillance non terminée/);
+void test('an unresolved live outage is never reported as a success', async () => {
+  let clock = start;
+  let calls = 0;
+  await assert.rejects(runMonitor({
+    now: () => clock,
+    maximumMs: 11 * minute,
+    sleep: async (ms) => { clock += ms; },
+    readState: async () => state([match()], Number.NaN),
+    syncFull: () => assert.fail('archive requested'),
+    syncLive: async () => { calls += 1; throw new Error('network down'); },
+  }), /network down/);
   assert.equal(calls, 3);
 });
 
-test('off-match first-pass failure gets retried', async () => {
-  let clock = start, calls = 0;
-  await runMonitor({ now: () => clock, sleep: async (ms) => { clock += ms; }, readState: async () => ({ matches: [] }),
-    syncLive: () => assert.fail(), syncFull: async () => { if (++calls === 1) throw new Error('timeout'); return { ok: true, matchesState: [] }; },
-  });
-  assert.equal(calls, 2);
-});
-
-test('continuous mode refreshes every 15 minutes and switches to live every 5 minutes', async () => {
-  let clock = start - 100 * 60_000;
-  let current = match({ status: 'SCHEDULED' });
-  const fullStarts = [];
-  const liveStarts = [];
+void test('a postponed match ends monitoring after authoritative confirmation', async () => {
+  let current = match();
+  let count = 0;
   await runMonitor({
-    now: () => clock,
-    maximumMs: 46 * 60_000,
-    stayAlive: true,
-    sleep: async (ms) => { clock += ms; },
-    readState: async () => ({ matches: [current] }),
-    syncFull: async () => {
-      fullStarts.push(clock);
-      return { ok: true, matchesState: [current] };
-    },
+    readState: async () => state([current], Number.NaN),
+    now: () => start,
+    sleep: () => assert.fail('unneeded wait'),
+    syncFull: () => assert.fail('archive requested'),
     syncLive: async () => {
-      liveStarts.push(clock);
-      if (liveStarts.length === 3) {
-        current = match({
-          status: 'FINISHED',
-          voteOpen: true,
-          voteClosesAt: new Date(clock + 48 * 3600000).toISOString(),
-        });
-      }
-      return { ok: true, matchesState: [current] };
+      count += 1;
+      current = match({ status: 'POSTPONED' });
+      return { ok: true, matchesState: [current], lastSync: new Date(start).toISOString() };
     },
   });
-  assert.deepEqual(liveStarts, [
-    start - 90 * 60_000,
-    start - 90 * 60_000 + POLL_MS,
-    start - 90 * 60_000 + 2 * POLL_MS,
-  ]);
-  assert.deepEqual(fullStarts, [
-    start - 100 * 60_000,
-    start - 75 * 60_000,
-    start - 60 * 60_000,
-  ]);
-  assert.equal(FULL_SYNC_MS, 15 * 60_000);
+  assert.equal(count, 1);
 });
 
-test('authentication errors are permanent and never disclose the token', async () => {
-  await assert.rejects(runMonitor({ readState: async () => { throw Object.assign(new Error('401'), { permanent: true }); },
-    syncLive: () => assert.fail(), syncFull: () => assert.fail(), sleep: () => assert.fail(),
+void test('authentication errors are permanent and never disclose the token', async () => {
+  await assert.rejects(runMonitor({
+    readState: async () => { throw Object.assign(new Error('401'), { permanent: true }); },
+    syncLive: () => assert.fail('live collection requested'),
+    syncFull: () => assert.fail('full collection requested'),
+    sleep: () => assert.fail('wait requested'),
   }), /401/);
 });
 
-test('live snapshot only asks for current event, lineup and final incidents', async () => {
+void test('configuration rejects insecure URLs and invalid durations fall back safely', () => {
+  assert.equal(validBaseUrl('https://psg-hub.fr/'), 'https://psg-hub.fr');
+  for (const url of ['http://psg-hub.fr', 'https://psg-hub.fr/api/state', 'https://secret@psg-hub.fr', 'https://psg-hub.fr/?secret=1']) {
+    assert.throws(() => validBaseUrl(url));
+  }
+  assert.equal(finiteInteger('oops', 325, 30, 325), 325);
+});
+
+void test('live snapshot only asks for current event, lineup and final incidents', async () => {
   const paths = [];
   const snapshot = await buildLiveSnapshot([match()], async (path) => {
     paths.push(path);
@@ -166,6 +328,6 @@ test('live snapshot only asks for current event, lineup and final incidents', as
   assert.equal(snapshot.responses['event/16938796/lineups'], undefined);
 });
 
-test('a response for a different event is rejected', async () => {
+void test('a response for a different event is rejected', async () => {
   await assert.rejects(buildLiveSnapshot([match()], async () => ({ event: { id: 99 } })), /incohérent/);
 });

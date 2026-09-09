@@ -9,9 +9,8 @@ on:
       - 'scripts/**'
       - 'package*.json'
   schedule:
-    # Réveil de secours toutes les 5 minutes. Hors match, le contrôle de
-    # fraîcheur limite les collectes à environ 15 minutes. De H-90 min jusqu'au
-    # vote ouvert, un même processus contrôle le match toutes les 5 minutes.
+    # Réveil de secours. Le robot collecte toutes les 8 h, toutes les 15 min à
+    # moins de 10 h du match, puis toutes les 5 min du coup d'envoi au vote.
     - cron: '2-59/5 * * * *'
   workflow_dispatch:
 
@@ -45,6 +44,7 @@ jobs:
           PSG_HUB_SYNC_URL: ${{ vars.PSG_HUB_SYNC_URL }}
         run: echo "stale=$(node scripts/sofascore-freshness.mjs)" >> "$GITHUB_OUTPUT"
       - name: Mettre à jour PSG Hub
+        id: sync
         if: steps.freshness.outputs.stale == 'true' || github.event_name != 'schedule'
         run: node scripts/sofascore-sync.mjs
         env:
@@ -53,8 +53,7 @@ jobs:
           CHROME_PATH: /usr/bin/google-chrome
           SOFASCORE_HOT_MAX_MINUTES: '325'
       - name: Passer le relais au prochain cycle continu
-        if: success()
+        if: ${{ always() && !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run sofascore-sync.yml --ref main
-

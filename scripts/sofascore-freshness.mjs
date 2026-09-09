@@ -1,9 +1,5 @@
-import { shouldRescue, validBaseUrl, finiteInteger } from './robot-policy.mjs';
+import { shouldRescue, validBaseUrl } from './robot-policy.mjs';
 const baseUrl = process.env.PSG_HUB_SYNC_URL ? validBaseUrl(process.env.PSG_HUB_SYNC_URL) : '';
-const maximumAge = Math.max(
-  60_000,
-  finiteInteger(process.env.SOFASCORE_MAX_AGE_MS, 12 * 60_000, 60_000, 30 * 60_000),
-);
 
 if (!baseUrl) {
   process.stdout.write('true');
@@ -22,7 +18,7 @@ try {
   });
   if (!response.ok) throw new Error(`PSG Hub ${response.status}`);
   const state = await response.json();
-  process.stdout.write(shouldRescue(state, Date.now(), maximumAge) ? 'true' : 'false');
+  process.stdout.write(shouldRescue(state, Date.now()) ? 'true' : 'false');
 } catch {
   process.stdout.write('true');
 }
