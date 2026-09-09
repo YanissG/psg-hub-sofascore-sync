@@ -387,6 +387,7 @@ export async function main() {
       syncFull: synchronize, sleep: wait,
       log: (message) => process.stderr.write(`${new Date().toISOString()} · ${message}\n`),
       maximumMs: finiteInteger(process.env.SOFASCORE_HOT_MAX_MINUTES, 325, 30, 325) * 60_000,
+      stayAlive: true,
     });
   } finally {
     if (browser) await Promise.race([browser.close().catch(() => undefined), wait(5_000)]);
@@ -399,4 +400,3 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     process.exit(1);
   });
 }
-

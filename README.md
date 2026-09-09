@@ -2,7 +2,7 @@
 
 Ce dépôt contient uniquement le robot de données PSG Hub, pas le site ni Vault.
 
-- Le réveil GitHub est demandé toutes les cinq minutes. Hors match, le contrôle de fraîcheur limite la collecte à environ quinze minutes.
+- Une exécution reste active pendant 325 minutes, collecte toutes les quinze minutes hors match, puis déclenche automatiquement l’exécution suivante. Les horaires GitHub ne servent plus que de secours.
 - À partir de 90 minutes avant le coup d’envoi, le processus reste actif et commence un passage toutes les cinq minutes, jusqu’à l’ouverture confirmée des votes du match concerné.
 - Pendant ce suivi, seuls le match, sa composition et ses incidents sont collectés. Les archives et le prochain adversaire ne bloquent plus le direct.
 - Les appels réseau ont des délais maximum. Les pannes temporaires sont réessayées, même au premier passage. Une panne persistante termine le travail en échec visible.

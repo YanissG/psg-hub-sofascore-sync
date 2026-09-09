@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { monitorTargets, shouldRescue, validBaseUrl, finiteInteger, POLL_MS } from './robot-policy.mjs';
+import { FULL_SYNC_MS, monitorTargets, shouldRescue, validBaseUrl, finiteInteger, POLL_MS } from './robot-policy.mjs';
 import { runMonitor } from './robot-runner.mjs';
 import { buildLiveSnapshot } from './sofascore-sync.mjs';
 
@@ -104,6 +104,46 @@ test('off-match first-pass failure gets retried', async () => {
     syncLive: () => assert.fail(), syncFull: async () => { if (++calls === 1) throw new Error('timeout'); return { ok: true, matchesState: [] }; },
   });
   assert.equal(calls, 2);
+});
+
+test('continuous mode refreshes every 15 minutes and switches to live every 5 minutes', async () => {
+  let clock = start - 100 * 60_000;
+  let current = match({ status: 'SCHEDULED' });
+  const fullStarts = [];
+  const liveStarts = [];
+  await runMonitor({
+    now: () => clock,
+    maximumMs: 46 * 60_000,
+    stayAlive: true,
+    sleep: async (ms) => { clock += ms; },
+    readState: async () => ({ matches: [current] }),
+    syncFull: async () => {
+      fullStarts.push(clock);
+      return { ok: true, matchesState: [current] };
+    },
+    syncLive: async () => {
+      liveStarts.push(clock);
+      if (liveStarts.length === 3) {
+        current = match({
+          status: 'FINISHED',
+          voteOpen: true,
+          voteClosesAt: new Date(clock + 48 * 3600000).toISOString(),
+        });
+      }
+      return { ok: true, matchesState: [current] };
+    },
+  });
+  assert.deepEqual(liveStarts, [
+    start - 90 * 60_000,
+    start - 90 * 60_000 + POLL_MS,
+    start - 90 * 60_000 + 2 * POLL_MS,
+  ]);
+  assert.deepEqual(fullStarts, [
+    start - 100 * 60_000,
+    start - 75 * 60_000,
+    start - 60 * 60_000,
+  ]);
+  assert.equal(FULL_SYNC_MS, 15 * 60_000);
 });
 
 test('authentication errors are permanent and never disclose the token', async () => {

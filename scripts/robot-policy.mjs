@@ -1,4 +1,5 @@
 export const POLL_MS = 5 * 60_000;
+export const FULL_SYNC_MS = 15 * 60_000;
 export const WARMUP_MS = 90 * 60_000;
 export const FINISHED_RETRY_MS = 48 * 60 * 60_000;
 
