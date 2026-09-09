@@ -243,6 +243,38 @@ void test('a reported sync error triggers an immediate recovery even when data i
   assert.equal(calls, 1);
 });
 
+void test('a missing next-match market triggers a full recovery during a live match', async () => {
+  let calls = 0;
+  await runMonitor({
+    now: () => start,
+    maximumMs: minute,
+    readState: async () => ({
+      ...state([match()], start),
+      predictionHub: {
+        activeMatchId: 'brest',
+        options: [],
+        market: null,
+        sync: {
+          enabled: true,
+          lastSync: new Date(start).toISOString(),
+          lastError: '',
+        },
+      },
+    }),
+    syncLive: () => assert.fail('live-only collection requested'),
+    syncFull: async () => {
+      calls += 1;
+      return {
+        ok: true,
+        matchesState: [match()],
+        lastSync: new Date(start).toISOString(),
+      };
+    },
+    sleep: () => assert.fail('wait requested'),
+  });
+  assert.equal(calls, 1);
+});
+
 void test('a status outage preserves the known live match', async () => {
   let clock = start;
   let reads = 0;
@@ -340,3 +372,4 @@ void test('live snapshot only asks for current event, lineup and final incidents
 void test('a response for a different event is rejected', async () => {
   await assert.rejects(buildLiveSnapshot([match()], async () => ({ event: { id: 99 } })), /incohérent/);
 });
+
