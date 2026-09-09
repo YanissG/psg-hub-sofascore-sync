@@ -36,7 +36,7 @@ jobs:
       - name: Installer le collecteur sécurisé
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Vérifier les scénarios de panne
-        run: npm run test:robot
+        run: npm test
       - name: Contrôler si un passage est nécessaire
         id: freshness
         shell: bash
@@ -57,4 +57,3 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run sofascore-sync.yml --ref main
-
